@@ -1,0 +1,217 @@
+## Reference: https://github.com/serverless/examples/tree/master/aws-node-single-page-app-via-cloudfront
+
+### TODO ###
+# Convert to this????? https://github.com/tmclaugh/serverless-zombo.com/blob/master/serverless.yml
+# Add custom domain and IPv6 with Cloudfront https://github.com/amplify-education/serverless-domain-manager
+
+service: serverless-static-site-chrismhurst-com
+
+# Define variables here
+custom:
+  myStage: ${opt:stage, self:provider.stage}
+  s3Bucket: serverless-static-site-chrismhurst-demos-com # must be named s3Bucket for plugin to work
+  aliases: chrismhurst-demos.com
+  loggingBucket: serverless-static-site-chrismhurst-demos-com-logging
+  hostedZoneName: chrismhurst-demos.com
+  aliasHostedZoneId: Z18P8EIKA9JM6G
+  aliasDNSName: s3-website-us-east-1.amazonaws.com
+  s3LocalPath: app/ # needed for SyncToS3 command from webapp plugin
+  # s3Sync:
+  #   - bucketName: ${self:custom.bucketName}
+  #     localDir: static
+
+plugins:
+  - serverless-single-page-app-plugin
+
+frameworkVersion: ">=1.28.0 <2.0.0"
+
+provider:
+  name: aws
+  runtime: go1.x
+
+package:
+ exclude:
+   - ./**
+ include:
+   - ./bin/**
+
+functions:
+  hello:
+    handler: bin/hello
+    events:
+      - http:
+          path: hello
+          method: get
+  world:
+    handler: bin/world
+    events:
+      - http:
+          path: world
+          method: get
+  # myIp can be invoked with: serverless invoke --function myIp --stage dev --region us-east-1 --path events/APIGatewayProxyRequest.json
+  myIp:
+    handler: bin/myIp
+    events:
+      - http:
+          path: myIp
+          method: get
+
+resources:
+  Resources:
+    ## Specifying the S3 Bucket
+    WebAppS3Bucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:custom.s3Bucket}
+        AccessControl: PublicRead
+        WebsiteConfiguration:
+          IndexDocument: index.html
+          ErrorDocument: index.html
+    ## Specifying the policies to make sure all files inside the Bucket are avaialble to CloudFront
+    WebAppS3BucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        Bucket:
+          Ref: WebAppS3Bucket
+        PolicyDocument:
+          Statement:
+            - Sid: PublicReadGetObject
+              Effect: Allow
+              Principal: "*"
+              Action:
+              - s3:GetObject
+              Resource: arn:aws:s3:::${self:custom.s3Bucket}/*
+    ## Specifying the CloudFront Distribution to server your Web Application
+    WebAppCloudFrontDistribution:
+      Type: AWS::CloudFront::Distribution
+      Properties:
+        DistributionConfig:
+          Origins:
+            - DomainName: ${self:custom.s3Bucket}.s3.amazonaws.com
+              ## An identifier for the origin which must be unique within the distribution
+              Id: WebApp
+              CustomOriginConfig:
+                HTTPPort: 80
+                HTTPSPort: 443
+                OriginProtocolPolicy: https-only
+              ## In case you want to restrict the bucket access use S3OriginConfig and remove CustomOriginConfig
+              # S3OriginConfig:
+              #   OriginAccessIdentity: origin-access-identity/cloudfront/E127EXAMPLE51Z
+          Enabled: 'true'
+          ## Uncomment the following section in case you are using a custom domain
+          Aliases:
+            - ${self:custom.aliases}
+          DefaultRootObject: index.html
+          CustomErrorResponses:
+            - ErrorCode: 404
+              ResponseCode: 200
+              ResponsePagePath: /index.html
+          DefaultCacheBehavior:
+            AllowedMethods:
+              - DELETE
+              - GET
+              - HEAD
+              - OPTIONS
+              - PATCH
+              - POST
+              - PUT
+            ## The origin id defined above
+            TargetOriginId: WebApp
+            ## Defining if and how the QueryString and Cookies are forwarded to the origin which in this case is S3
+            ForwardedValues:
+              QueryString: 'false'
+              Cookies:
+                Forward: none
+            ## The protocol that users can use to access the files in the origin. To allow HTTP use `allow-all`
+            ViewerProtocolPolicy: redirect-to-https
+          ## The certificate to use when viewers use HTTPS to request objects.
+          ViewerCertificate:
+            CloudFrontDefaultCertificate: 'true'
+            # AcmCertificateArn: ${file(./config.js):${opt:stage}.CERTIFICATE_ARN}
+            # SslSupportMethod: sni-only
+          ## Uncomment the following section in case you want to enable logging for CloudFront requests
+          # Logging:
+          #   IncludeCookies: 'false'
+          #   Bucket: mylogs.s3.amazonaws.com
+          #   Prefix: myprefix
+    ## Create DNS record
+    DnsRecord:
+      Type: "AWS::Route53::RecordSet"
+      Properties:
+        AliasTarget:
+          DNSName: ${self:custom.aliasDNSName}
+          HostedZoneId: ${self:custom.aliasHostedZoneId}
+        HostedZoneName: ${self:custom.hostedZoneName}.
+        Name:
+          Ref: WebAppCloudFrontDistribution
+        Type: 'A'
+  ## In order to print out the hosted domain via `serverless info` we need to define the DomainName output for CloudFormation
+  Outputs:
+    WebAppS3BucketOutput:
+      Value:
+        'Ref': WebAppS3Bucket
+    WebAppCloudFrontDistributionOutput:
+      Value:
+        'Fn::GetAtt': [ WebAppCloudFrontDistribution, DomainName ]
+
+# resources:
+#   Resources:
+#     # Bucket for static site
+#     WebApp:
+#       Type: AWS::S3::Bucket
+#       Properties:
+#         AccessControl: PublicRead
+#         BucketName: ${self:custom.bucketName}
+#         WebsiteConfiguration:
+#           IndexDocument: index.html
+#           ErrorDocument: index.html
+#     # Policy for bucket
+#     WebAppS3BucketPolicy:
+#       Type: AWS::S3::BucketPolicy
+#       Properties:
+#         Bucket:
+#           Ref: WebApp
+#         PolicyDocument:
+#           Statement:
+#             - Sid: PublicReadGetObject
+#               Effect: Allow
+#               Principal: "*"
+#               Action:
+#               - s3:GetObject
+#               Resource:
+#                 Fn::Join: [
+#                   "", [
+#                     "arn:aws:s3:::",
+#                     {
+#                       "Ref": "WebApp"
+#                     },
+#                     "/*"
+#                   ]
+#                 ]
+    # # Create DNS record
+    # DnsRecord:
+    #   Type: "AWS::Route53::RecordSet"
+    #   Properties:
+    #     AliasTarget:
+    #       DNSName: ${self:custom.aliasDNSName}
+    #       HostedZoneId: ${self:custom.aliasHostedZoneId}
+    #     HostedZoneName: ${self:custom.siteName}.
+    #     Name:
+    #       Ref: WebApp
+    #     Type: 'A'
+  # Define Outputs for command
+  # Outputs:
+  #   WebAppS3BucketName:
+  #     Value:
+  #       'Ref': WebApp
+  #   WebAppS3BucketDomainName:
+  #     Value:
+  #       Fn::GetAtt:
+  #         - WebApp
+  #         - DomainName
+  #   WebAppS3BucketWebsiteURL:
+  #     Value:
+  #       Fn::GetAtt:
+  #         - WebApp
+  #         - WebsiteURL
+

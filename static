@@ -1,0 +1,1 @@
+/home/chris/Projects/go/src/github.com/chrismhurst/chrismhurst/site/

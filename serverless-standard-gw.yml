@@ -1,0 +1,173 @@
+## Reference: https://github.com/tmclaugh/serverless-zombo.com/blob/master/serverless.yml
+
+### TODO ###
+# Add custom domain and IPv6 with Cloudfront https://github.com/amplify-education/serverless-domain-manager
+
+service: serverless-static-site-chrismhurst-com
+
+# Define variables here
+custom:
+  myStage: ${opt:stage, self:provider.stage}
+  syncS3Buckets:
+    - bucketRef: StaticSite
+      localDir: static
+  staticSiteBucket: serverless-static-site-chrismhurst-demos-com
+  loggingBucket: serverless-static-site-chrismhurst-demos-com-logging
+  hostedZoneName: chrismhurst-demos.com
+  cloudfrontHostedZoneId: Z18P8EIKA9JM6G #This is Cloudfront's statically coded Hosted Zone ID for all distributions
+  aliasDNSName: s3-website-us-east-1.amazonaws.com
+
+provider:
+  name: aws
+  runtime: go1.x
+  stackTags:
+    serverless:servess: ${self:service}
+
+plugins:
+  - serverless-sync-s3buckets # npm install --save serverless-sync-s3buckets
+
+frameworkVersion: ">=1.28.0 <2.0.0"
+
+package:
+ exclude:
+   - ./**
+ include:
+   - ./bin/**
+
+functions:
+  hello:
+    handler: bin/hello
+    events:
+      - http:
+          path: hello
+          method: get
+  world:
+    handler: bin/world
+    events:
+      - http:
+          path: world
+          method: get
+  myIp: # myIp can be invoked with: serverless invoke --function myIp --stage dev --region us-east-1 --path events/APIGatewayProxyRequest.json
+    handler: bin/myIp
+    events:
+      - http:
+          path: myIp
+          method: get
+
+resources:
+  Resources:
+    ## Specifying the S3 Bucket
+    StaticSite:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${opt:stage}-${self:custom.staticSiteBucket}
+        AccessControl: PublicRead
+        WebsiteConfiguration:
+          IndexDocument: index.html
+          ErrorDocument: index.html
+
+    StaticSiteS3BucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        Bucket:
+          Ref: StaticSite
+        PolicyDocument:
+          Statement:
+            - Sid: PublicReadGetObject
+              Effect: Allow
+              Principal: '*'
+              Action:
+                - s3:GetObject
+              Resource:
+                Fn::Join: [
+                  "", [
+                    "arn:aws:s3:::",
+                    {
+                      "Ref": "StaticSite"
+                    },
+                    "/*"
+                  ]
+                ]
+
+    StaticSiteCert:
+      Type: AWS::CertificateManager::Certificate
+      Properties:
+        DomainName: ${self:custom.hostedZoneName}
+        DomainValidationOptions:
+        - DomainName: ${self:custom.hostedZoneName}
+          ValidationDomain: ${self:custom.hostedZoneName}
+        ValidationMethod: DNS
+
+    CloudFrontDistribution:
+      Type: AWS::CloudFront::Distribution
+      Properties:
+        DistributionConfig:
+          Origins:
+            - DomainName:
+                Fn::Join: [
+                  "", [
+                    { "Ref": "StaticSite" },
+                    ".s3.amazonaws.com"
+                  ]
+                ]
+              # It isn't necessary to sue this value; but we need the same
+              # value for DefaultCacheBehavior.TargetOriginId
+              Id:
+                Ref: StaticSite
+              CustomOriginConfig:
+                HTTPPort: 80
+                HTTPSPort: 443
+                OriginProtocolPolicy: https-only
+          Enabled: 'true'
+          Aliases:
+            - ${self:custom.hostedZoneName}
+          DefaultRootObject: index.html
+          CustomErrorResponses:
+            - ErrorCode: 404
+              ResponseCode: 200
+              ResponsePagePath: /index.html
+          DefaultCacheBehavior:
+            AllowedMethods:
+              - GET
+              - HEAD
+            TargetOriginId:
+              Ref: StaticSite
+            ForwardedValues:
+              QueryString: 'false'
+              Cookies:
+                Forward: none
+            ViewerProtocolPolicy: redirect-to-https
+          ViewerCertificate:
+            AcmCertificateArn:
+              Ref: StaticSiteCert
+            SslSupportMethod: sni-only
+          ## Uncomment the following section in case you want to enable logging for CloudFront requests
+          # Logging:
+          #  IncludeCookies: 'false'
+          #   Bucket: mylogs.s3.amazonaws.com
+          #   Prefix: myprefix
+      DependsOn:
+        - StaticSiteS3BucketPolicy
+
+    DnsRecord:
+      Type: "AWS::Route53::RecordSet"
+      Properties:
+        AliasTarget:
+          DNSName:
+            Fn::GetAtt: [ CloudFrontDistribution, DomainName ]
+          HostedZoneId: ${self:custom.cloudfrontHostedZoneId}
+        HostedZoneName: ${self:custom.hostedZoneName}.
+        Name: ${self:custom.hostedZoneName}.
+        Type: 'A'
+      DependsOn: 
+        - CloudFrontDistribution
+
+  Outputs:
+    StaticSiteS3BucketName:
+      Value:
+        Ref: StaticSite
+    CloudFrontDistribution:
+      Value:
+        Fn::GetAtt:
+          - CloudFrontDistribution
+          - DomainName
